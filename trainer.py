@@ -1,0 +1,201 @@
+import numpy as np
+import utility as ut
+
+"""
+This file contains the implementation of the classification algorithm that ranks the responses based on KL-Divergence Values. It is based on the work done by Leuski and Traum in "A STATISTICAL APPROACH FOR TEXT PROCESSING IN VIRTUAL HUMANS"
+"""
+class trainer:
+
+	def __init__ (self, lambda_phi, lambda_pi, training_set):
+		self.lambda_phi = lambda_phi
+		self.lambda_pi = lambda_pi
+		
+		# Clean (Lower Case; Remove Punctuation) Training Set
+		# Keep backup of formatted data as well
+		self.training_orig = dict()
+		self.training_set = []
+		for (ques, ans) in training_set:
+			self.training_set.append((ut.clean(ques),ut.clean(ans)))
+			self.training_orig[ut.clean(ans)] = ans
+		
+		print self.training_set
+
+		# Initialize Maps for Phi and Pi, to learn their values
+		self.pi_dict = dict()
+		self.phi_dict = dict()
+
+	def train(self):
+		# Clear Dictionary
+		self.pi_dict.clear() 
+		self.phi_dict.clear()
+
+		# Initialize Variables to calculate occurences of words in answers
+		# to calculate phi
+		tot_occur_phi = dict()
+		tot_words_phi = 0
+		cur_occur_phi = dict()
+		cur_words_phi = dict()
+		# to calculate pi upto 3 words in depth
+		tot_occur_pi = dict()
+		tot_words_pi = 0
+		cur_occur_pi = dict()
+		cur_words_pi = dict()
+
+		tot_occur_pi_2 = dict()
+		tot_words_pi_2 = dict()
+		cur_occur_pi_2 = dict()
+		cur_words_pi_2 = dict()
+
+		tot_occur_pi_3 = dict()
+		tot_words_pi_3 = dict()
+		cur_occur_pi_3 = dict()
+		cur_words_pi_3 = dict()
+
+
+
+		# Iterate over all questions, answers in training set
+		for (ques, ans) in self.training_set:
+		
+			# Iterate over all words in every answer
+			for word in ans.split():	
+				# Update all counts of words in answers
+				tot_occur_phi[word] = tot_occur_phi.get(word,0) + 1
+				cur_occur_phi[(ans,word)] = cur_occur_phi.get((ans,word),0) + 1		
+				cur_words_phi[ans] = cur_words_phi.get(ans, 0) + 1
+				tot_words_phi += 1
+
+		
+			# Iterate over all words in every question
+			prev_word = None
+			prev_2_word = None
+			for word in ques.split():
+				# Update all counts of words in question
+				tot_occur_pi[word] = tot_occur_pi.get(word,0) + 1
+				cur_occur_pi[(ques,word)] = cur_occur_pi.get((ques,word),0) + 1		
+				cur_words_pi[ques] = cur_words_pi.get(ques, 0) + 1
+				tot_words_pi += 1
+
+				cur_occur_pi_2[(ques, prev_word, word)] = cur_occur_pi_2.get((ques, prev_word, word),0) + 1
+				tot_occur_pi_2[(prev_word, word)] = tot_occur_pi_2.get((prev_word, word),0) + 1
+
+				cur_occur_pi_3[(ques, prev_2_word, prev_word, word)] = cur_occur_pi_3.get((ques, prev_2_word, prev_word, word),0) + 1
+				tot_occur_pi_3[(prev_2_word, prev_word, word)] = tot_occur_pi_3.get((prev_2_word, prev_word, word),0) + 1
+	
+				prev_2_word = prev_word
+				prev_word = word
+		
+		# Once Total counts are measured, create phi, pi metrics for all
+		# word, string pairs
+		for (ques, ans) in self.training_set:	
+			
+			# Iterate over all words in answers
+			for word,tot_count in tot_occur_phi.iteritems():
+				self.phi_dict[(ans, word)] = self.lambda_phi * cur_occur_phi.get((ans,word),0) / cur_words_phi[ans] + (1 - self.lambda_phi) * tot_count / tot_words_phi
+
+			# Iterate over all combinations of 3 consecutive words in questions
+			for (w_2,w_1,w), tot_count in tot_occur_pi_3.iteritems():
+#				print w_2, w_1, w
+				self.pi_dict[(ques, w)] = self.pi_dict.get((ques,w),0)
+
+				self.pi_dict[(ques, w)] += self.lambda_pi[0] * cur_occur_pi_3.get((ques, w_2, w_1, w),0) / cur_occur_pi_2.get((ques, w_2, w_1), 0) # Smoothing, to make sure denom doesnt become 0, if numerator exists then denom should exist except if w_2, w_1 is none
+				self.pi_dict[(ques, w)] += self.lambda_pi[1] * tot_count / tot_occur_pi_2.get((w_2,w_1),0)
+
+				self.pi_dict[(ques, w)] += self.lambda_pi[2] * cur_occur_pi_2.get((ques, w_1, w),0) / cur_occur_pi.get((ques, w_1), 0)
+				self.pi_dict[(ques, w)] += self.lambda_pi[3] * tot_occur_pi_2.get((w_1, w), 0) / tot_occur_pi.get(w_1, 0)
+
+				self.pi_dict[(ques, w)] += self.lambda_pi[4] * cur_occur_pi.get((ques, w),0) / cur_words_pi.get(ques, 0)
+				self.pi_dict[(ques, w)] += self.lambda_pi[5] * tot_occur_pi.get(w, 0) / tot_words_pi
+
+	def get_classification(self, text):
+		text = ut.clean(text)
+	
+		# Map to store answer to its divergence pairs
+		list_of_ans = dict()
+
+		# Calculate Denominator of Cond. Prob. P(v|W); v - Single word in the answer; W - User utterance
+		# Calculate once, since its independent of indv. responses/ answers
+		pv_den = 0.0
+
+		# Store PI_Ws(w_i) [i = 1...n] for each Ws for use in the numerator as well
+		pi_prod = dict()
+
+		# Iterate over all questions
+		for (ques, ans) in self.training_set:
+			for word in text.split():
+				pi_prod[ques] = pi_prod.get(ques , 1) * self.pi_dict.get((ques,word), 1) # Smoothing, if not available (i.e count = 0), make it 1 so that the rest doesnt become 0
+				if(pi_prod[ques] == 0):
+					break
+			pv_den += pi_prod[ques]
+	
+		# Calculate metric for answer that can be given
+		# Iterate over all answers in training_Set
+		for (question, answer) in self.training_set:
+		
+			# Iterate over individual words in every answer
+			for word in answer.split():
+
+				# Calculate numerator of Cond. Prob. P(v|W)
+				pv_num = 0.0
+				for ques,ans in self.training_set:
+					pv_num += self.phi_dict.get((ans, word), 0) * pi_prod[ques]  # Smoothing, if not available (i.e count = 0), make it 1 so that the rest doesnt become 0
+
+				# Calculate pv for each word 'v'
+				pv = pv_num / pv_den
+
+				# In KL Divergence; log0 = 0 
+				log_term = pv / self.phi_dict.get((answer,word), 0) # Smoothing, if not available (i.e count = 0), make it 1 so that the rest doesnt become 0
+				if(log_term != 0):
+					log_term = np.log10(log_term)
+
+				list_of_ans[self.training_orig.get(answer, answer)] = list_of_ans.get(self.training_orig.get(answer, answer),0) + (pv * log_term)
+		
+		# Return Weighted list of responses
+		return list_of_ans
+
+# OptimizeLambda Class
+# Inherits from trainer class, provides an interface to optimize
+# lambda values present in trainer. 
+# 
+# Implements a cost function, that takes in these parameters and returns a cost 
+# that is equal to the number of misclassified examples in the training set
+# 
+# Requires a seperate optimization algorithm implementation
+class OptimizeLambda(trainer):
+
+	# Construct class from training set, and random initial lambda
+	def __init__(self, training_set):
+		trainer.__init__(self, 0.5, 0.5, training_set)
+		self.limits = [[0, 1], [0, 1], [0, 1], [0, 1], [0, 1], [0, 1], [0, 1]]
+		self.dim = 7
+
+	# Limits of the parameters being considered
+	def getLimits (self):
+		return self.limits
+
+	# Returns Number of dimensions for optimization
+	def getDimensions(self):
+		return self.dim
+	
+	# Defines a cost function that returns the absolute error
+	# in classification of training data for given values for
+	# lambda_phi and lambda_pi
+	def costFunction (self, params):
+		self.lambda_phi = params[0]
+		self.lambda_pi = map(lambda x: x/sum(params[1:]), params[1:] )
+		#print self.lambda_pi
+
+		# Train the classifier
+		self.train()
+
+		# Calculate Error
+		error = 0.0
+		for (ques,ans) in self.training_set:
+			res = self.get_classification(ques)
+			pred_ans = ut.clean(ut.key_max_val_dict (res))
+			# Add one for every misclassified result
+			if(pred_ans != ans):
+#				print pred_ans, ans
+#				raw_input()
+				error += 1
+
+		return error
